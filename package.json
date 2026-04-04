@@ -1,0 +1,20 @@
+{
+  "name": "mimamori-ws-server",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "ts-node server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@fastify/websocket": "^10.0.0",
+    "@supabase/supabase-js": "^2.0.0",
+    "fastify": "^5.0.0",
+    "ws": "^8.0.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.0.0",
+    "ts-node": "^10.0.0",
+    "typescript": "^5.0.0"
+  }
+}
