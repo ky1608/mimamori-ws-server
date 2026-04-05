@@ -120,18 +120,17 @@ app.register(async (fastify) => {
 
       console.log(`[grok] イベント: ${event.type}`);
 
-      // pcm16音声をmulawに変換してTwilioに送る
-      if (event.type === "response.audio.delta" && streamSid) {
+      // pcm16音声をμLaw 8000Hzに変換してTwilioに送る
+      if (event.type === "response.output_audio.delta" && streamSid) {
         try {
           const pcmBuf = Buffer.from(event.delta as string, "base64");
           const mulawBuf = pcm16BufferToMulawBuffer(pcmBuf);
-          const mulawB64 = mulawBuf.toString("base64");
 
           if (twilioWs.readyState === WebSocket.OPEN) {
             twilioWs.send(JSON.stringify({
               event: "media",
               streamSid,
-              media: { payload: mulawB64 },
+              media: { payload: mulawBuf.toString("base64") },
             }));
           }
         } catch (e) {
@@ -141,6 +140,9 @@ app.register(async (fastify) => {
 
       // 会話テキストをログに追記
       if (event.type === "response.audio_transcript.delta") {
+        rawLog += `AI: ${event.delta}\n`;
+      }
+      if (event.type === "response.output_audio_transcript.delta") {
         rawLog += `AI: ${event.delta}\n`;
       }
       if (event.type === "conversation.item.input_audio_transcription.completed") {
