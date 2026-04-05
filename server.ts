@@ -211,6 +211,7 @@ app.register(async (fastify) => {
           turn_detection: { type: "server_vad" },
           input_audio_format: "pcm16",
           output_audio_format: "pcm16",
+          input_audio_transcription: { model: "whisper-1" },
         },
       }));
       console.log("[ws] session.update 送信完了");
@@ -313,14 +314,70 @@ app.register(async (fastify) => {
     twilioWs.on("close", async () => {
       clearTimers();
       console.log(`[ws] Twilio WebSocket 切断 callSid=${callSid}`);
-      if (callSid && rawLog) {
-        await supabase.from("conversations").insert({
-          user_id:   userId,
-          raw_log:   rawLog,
-          call_sid:  callSid,
-          called_at: new Date().toISOString(),
+
+      if (!callSid || !rawLog) {
+        console.log("[ws] rawLogなし：保存・要約スキップ");
+        return;
+      }
+
+      const webBaseUrl = process.env.WEB_BASE_URL ?? "https://web-henna-nine-23.vercel.app";
+      const calledAt = new Date().toISOString();
+
+      // ① 要約APIを呼ぶ
+      let summary = "";
+      let score = "普通";
+      let concern = "特になし";
+      try {
+        const res = await fetch(`${webBaseUrl}/api/summarize`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId, rawLog, calledAt, callSid }),
         });
-        console.log("[ws] raw_log 保存完了");
+        if (res.ok) {
+          const data = await res.json() as { summary: string; score: string; concern: string };
+          summary = data.summary;
+          score   = data.score;
+          concern = data.concern;
+          console.log("[ws] 要約完了:", summary);
+        } else {
+          console.error("[ws] 要約API失敗:", await res.text());
+        }
+      } catch (e) {
+        console.error("[ws] 要約API呼び出しエラー:", e);
+      }
+
+      // ② LINE通知を送る
+      try {
+        const { data: user } = await supabase
+          .from("users")
+          .select("parent_name, line_user_id")
+          .eq("id", userId)
+          .single();
+
+        if (user?.line_user_id) {
+          const callTime = new Date().toLocaleTimeString("ja-JP", {
+            hour: "2-digit", minute: "2-digit", timeZone: "Asia/Tokyo",
+          });
+          const scoreKey = score === "良い" ? "good" : score === "注意" ? "caution" : "normal";
+          const lineBody = concern !== "特になし" ? `${summary}\n\n⚠️ 気になる点：${concern}` : summary;
+
+          await fetch(`${webBaseUrl}/api/line-notify`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              lineUserId: user.line_user_id,
+              parentName: user.parent_name,
+              score: scoreKey,
+              summary: lineBody,
+              callTime,
+            }),
+          });
+          console.log("[ws] LINE通知送信完了");
+        } else {
+          console.log("[ws] LINE未連携のため通知スキップ");
+        }
+      } catch (e) {
+        console.error("[ws] LINE通知エラー:", e);
       }
     });
   });
