@@ -26,7 +26,7 @@ app.register(async (fastify) => {
     console.log(`[ws] 接続開始 userId=${userId}`);
 
     // Grok Voice API の WebSocket に接続
-    grokWs = new WebSocket("wss://api.x.ai/v1/voice/stream", {
+    grokWs = new WebSocket("wss://api.x.ai/v1/realtime", {
       headers: {
         Authorization: `Bearer ${process.env.XAI_API_KEY}`,
       },
