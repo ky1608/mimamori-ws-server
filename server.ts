@@ -34,15 +34,11 @@ app.register(async (fastify) => {
     }
     console.log(`[ws] XAI_API_KEY 確認済み（先頭8文字: ${apiKey.slice(0, 8)}...）`);
 
-    grokWs = new WebSocket(
-      "wss://api.x.ai/v1/realtime?model=grok-2-voice-preview",
-      {
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-      }
-    );
+    grokWs = new WebSocket("wss://api.x.ai/v1/realtime", {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
+    });
 
     grokWs.on("open", () => {
       console.log("[ws] Grok Voice API 接続完了");
@@ -91,7 +87,13 @@ app.register(async (fastify) => {
       }
     });
 
-    grokWs.on("error", (e) => console.error("[ws] Grok WebSocket エラー:", e));
+    grokWs.on("error", (e: Error & { message?: string }) => {
+      console.error("[ws] Grok WebSocket エラー:", e.message ?? e);
+    });
+    grokWs.on("unexpected-response", (_req, res) => {
+      console.error(`[ws] Grok 接続失敗 HTTP ${res.statusCode}: ${res.statusMessage}`);
+      res.on("data", (chunk: Buffer) => console.error("[ws] レスポンス body:", chunk.toString()));
+    });
     grokWs.on("close", () => console.log("[ws] Grok WebSocket 切断"));
 
     // Twilio → Grok（音声）
