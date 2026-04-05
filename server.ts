@@ -105,8 +105,9 @@ function grokToTwilio(base64Pcm24k: string): string {
 
 app.register(async (fastify) => {
   fastify.get("/stream", { websocket: true }, (twilioWs, req) => {
+    // URLクエリパラメータからuserIdを取得（Twilioが保持しない場合はstartイベントで上書き）
     const url = new URL(`ws://localhost${req.url}`);
-    const userId = url.searchParams.get("userId") ?? "";
+    let userId = url.searchParams.get("userId") ?? "";
 
     let callSid   = "";
     let rawLog    = "";
@@ -114,7 +115,7 @@ app.register(async (fastify) => {
     let streamSid = "";
     let farewellSent = false;
 
-    console.log(`[ws] 接続開始 userId=${userId}`);
+    console.log(`[ws] 接続開始 req.url=${req.url} userId=${userId}`);
 
     // 最大通話時間タイマー（4分30秒で別れの挨拶、5分で強制切断）
     const MAX_CALL_MS    = 5 * 60 * 1000;
@@ -245,11 +246,19 @@ app.register(async (fastify) => {
         }
       }
 
-      if (event.type === "response.output_audio_transcript.delta") {
-        rawLog += `AI: ${event.delta}\n`;
+      // AIの発話テキスト（完全版をdoneで取得）
+      if (event.type === "response.output_audio_transcript.done") {
+        if (event.transcript) {
+          rawLog += `AI: ${event.transcript}\n`;
+          console.log(`[ws] AI発話ログ: ${String(event.transcript).slice(0, 50)}...`);
+        }
       }
+      // ユーザーの発話テキスト
       if (event.type === "conversation.item.input_audio_transcription.completed") {
-        rawLog += `親: ${event.transcript}\n`;
+        if (event.transcript) {
+          rawLog += `親: ${event.transcript}\n`;
+          console.log(`[ws] ユーザー発話ログ: ${String(event.transcript).slice(0, 50)}...`);
+        }
       }
       if (event.type === "error") {
         console.error("[ws] Grok エラーイベント:", JSON.stringify(event));
@@ -281,10 +290,20 @@ app.register(async (fastify) => {
       }
 
       if (event.event === "start") {
-        const s = event.start as Record<string, string>;
+        const s = event.start as {
+          streamSid: string;
+          callSid: string;
+          customParameters?: Record<string, string>;
+        };
         streamSid = s.streamSid;
         callSid   = s.callSid;
-        console.log(`[ws] Twilio Stream 開始 SID=${callSid}`);
+
+        // URLパラメータで取れなかった場合はcustomParametersから取得
+        if (!userId && s.customParameters?.userId) {
+          userId = s.customParameters.userId;
+          console.log(`[ws] customParametersからuserId取得: ${userId}`);
+        }
+        console.log(`[ws] Twilio Stream 開始 SID=${callSid} userId=${userId}`);
       }
 
       if (event.event === "media" && grokWs?.readyState === WebSocket.OPEN) {
