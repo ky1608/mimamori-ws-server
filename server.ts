@@ -134,7 +134,7 @@ app.register(async (fastify) => {
         type: "session.update",
         session: {
           modalities: ["audio", "text"],
-          instructions: systemPrompt,
+          instructions: `必ず日本語で話してください。英語は使わないでください。\n${systemPrompt}`,
           voice: "Eve",
           turn_detection: { type: "server_vad" },
           input_audio_format: "pcm16",
