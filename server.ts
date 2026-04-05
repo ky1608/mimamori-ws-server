@@ -46,8 +46,10 @@ function mulawBufferToPcm16Buffer(mulawBuf: Buffer): Buffer {
 }
 
 function pcm16BufferToMulawBuffer(pcmBuf: Buffer): Buffer {
-  const mulaw = Buffer.alloc(pcmBuf.length / 2);
-  for (let i = 0; i < mulaw.length; i++) {
+  // 奇数バイトの場合は切り捨て
+  const samples = Math.floor(pcmBuf.length / 2);
+  const mulaw = Buffer.alloc(samples);
+  for (let i = 0; i < samples; i++) {
     const sample = pcmBuf.readInt16LE(i * 2);
     mulaw[i] = linearToMulaw(sample);
   }
@@ -76,8 +78,8 @@ app.register(async (fastify) => {
     }
     console.log(`[ws] XAI_API_KEY 確認済み（先頭8文字: ${apiKey.slice(0, 8)}...）`);
 
-    // Grok Voice API の WebSocket に接続
-    grokWs = new WebSocket("wss://api.x.ai/v1/realtime", {
+    // モデルをURLに指定してGrok Voice APIに接続
+    grokWs = new WebSocket("wss://api.x.ai/v1/realtime?model=grok-2-voice-preview", {
       headers: {
         Authorization: `Bearer ${apiKey}`,
       },
@@ -86,7 +88,7 @@ app.register(async (fastify) => {
     grokWs.on("open", () => {
       console.log("[ws] Grok Voice API 接続完了");
 
-      // セッション設定（pcm16形式）
+      // セッション設定
       grokWs!.send(JSON.stringify({
         type: "session.update",
         session: {
@@ -98,11 +100,13 @@ app.register(async (fastify) => {
           },
           input_audio_format: "pcm16",
           output_audio_format: "pcm16",
-          input_audio_transcription: { model: "whisper-1" },
         },
       }));
-
       console.log("[ws] session.update 送信完了");
+
+      // Grokに最初の発話を促す
+      grokWs!.send(JSON.stringify({ type: "response.create" }));
+      console.log("[ws] response.create 送信完了");
     });
 
     // Grok → Twilio（音声・テキスト）
@@ -114,19 +118,24 @@ app.register(async (fastify) => {
         return;
       }
 
+      console.log(`[grok] イベント: ${event.type}`);
+
       // pcm16音声をmulawに変換してTwilioに送る
       if (event.type === "response.audio.delta" && streamSid) {
-        const pcmBuf = Buffer.from(event.delta as string, "base64");
-        const mulawBuf = pcm16BufferToMulawBuffer(pcmBuf);
-        const mulawB64 = mulawBuf.toString("base64");
+        try {
+          const pcmBuf = Buffer.from(event.delta as string, "base64");
+          const mulawBuf = pcm16BufferToMulawBuffer(pcmBuf);
+          const mulawB64 = mulawBuf.toString("base64");
 
-        const twilioMsg = JSON.stringify({
-          event: "media",
-          streamSid,
-          media: { payload: mulawB64 },
-        });
-        if (twilioWs.readyState === WebSocket.OPEN) {
-          twilioWs.send(twilioMsg);
+          if (twilioWs.readyState === WebSocket.OPEN) {
+            twilioWs.send(JSON.stringify({
+              event: "media",
+              streamSid,
+              media: { payload: mulawB64 },
+            }));
+          }
+        } catch (e) {
+          console.error("[ws] 音声変換エラー (pcm16→mulaw):", e);
         }
       }
 
@@ -150,7 +159,9 @@ app.register(async (fastify) => {
       console.error(`[ws] Grok 接続失敗 HTTP ${res.statusCode}: ${res.statusMessage}`);
       res.on("data", (chunk: Buffer) => console.error("[ws] レスポンス body:", chunk.toString()));
     });
-    grokWs.on("close", () => console.log("[ws] Grok WebSocket 切断"));
+    grokWs.on("close", (code, reason) => {
+      console.log(`[ws] Grok WebSocket 切断 code=${code} reason=${reason?.toString()}`);
+    });
 
     // Twilio → Grok（音声: mulaw → pcm16 変換して転送）
     twilioWs.on("message", (data: Buffer) => {
@@ -161,24 +172,30 @@ app.register(async (fastify) => {
         return;
       }
 
+      if (event.event === "connected") {
+        console.log("[ws] Twilio WebSocket 接続確認");
+      }
+
       if (event.event === "start") {
         const startData = event.start as Record<string, string>;
         streamSid = startData.streamSid;
         callSid   = startData.callSid;
-        console.log(`[ws] Twilio Stream 開始 SID=${callSid}`);
+        console.log(`[ws] Twilio Stream 開始 SID=${callSid} streamSid=${streamSid}`);
       }
 
       // mulawをpcm16に変換してGrokに転送
       if (event.event === "media" && grokWs?.readyState === WebSocket.OPEN) {
-        const mediaData = event.media as Record<string, string>;
-        const mulawBuf = Buffer.from(mediaData.payload, "base64");
-        const pcmBuf = mulawBufferToPcm16Buffer(mulawBuf);
-        const pcmB64 = pcmBuf.toString("base64");
-
-        grokWs.send(JSON.stringify({
-          type: "input_audio_buffer.append",
-          audio: pcmB64,
-        }));
+        try {
+          const mediaData = event.media as Record<string, string>;
+          const mulawBuf = Buffer.from(mediaData.payload, "base64");
+          const pcmBuf = mulawBufferToPcm16Buffer(mulawBuf);
+          grokWs.send(JSON.stringify({
+            type: "input_audio_buffer.append",
+            audio: pcmBuf.toString("base64"),
+          }));
+        } catch (e) {
+          console.error("[ws] 音声変換エラー (mulaw→pcm16):", e);
+        }
       }
 
       if (event.event === "stop") {
@@ -187,15 +204,19 @@ app.register(async (fastify) => {
       }
     });
 
+    twilioWs.on("error", (e: Error) => {
+      console.error("[ws] Twilio WebSocket エラー:", e.message);
+    });
+
     // 通話終了時：raw_logをSupabaseに保存
     twilioWs.on("close", async () => {
       console.log(`[ws] Twilio WebSocket 切断 callSid=${callSid}`);
 
       if (callSid && rawLog) {
         await supabase.from("conversations").insert({
-          user_id:  userId,
-          raw_log:  rawLog,
-          call_sid: callSid,
+          user_id:   userId,
+          raw_log:   rawLog,
+          call_sid:  callSid,
           called_at: new Date().toISOString(),
         });
         console.log("[ws] raw_log 保存完了");
