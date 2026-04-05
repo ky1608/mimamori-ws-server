@@ -26,11 +26,23 @@ app.register(async (fastify) => {
     console.log(`[ws] 接続開始 userId=${userId}`);
 
     // Grok Voice API の WebSocket に接続
-    grokWs = new WebSocket("wss://api.x.ai/v1/realtime", {
-      headers: {
-        Authorization: `Bearer ${process.env.XAI_API_KEY}`,
-      },
-    });
+    const apiKey = process.env.XAI_API_KEY;
+    if (!apiKey) {
+      console.error("[ws] XAI_API_KEY が設定されていません");
+      twilioWs.close();
+      return;
+    }
+    console.log(`[ws] XAI_API_KEY 確認済み（先頭8文字: ${apiKey.slice(0, 8)}...）`);
+
+    grokWs = new WebSocket(
+      "wss://api.x.ai/v1/realtime?model=grok-2-voice-preview",
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
 
     grokWs.on("open", () => {
       console.log("[ws] Grok Voice API 接続完了");
