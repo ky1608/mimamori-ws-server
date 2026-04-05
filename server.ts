@@ -113,8 +113,44 @@ app.register(async (fastify) => {
     let rawLog    = "";
     let grokWs: WebSocket | null = null;
     let streamSid = "";
+    let farewellSent = false;
 
     console.log(`[ws] 接続開始 userId=${userId}`);
+
+    // 最大通話時間タイマー（4分30秒で別れの挨拶、5分で強制切断）
+    const MAX_CALL_MS    = 5 * 60 * 1000;
+    const FAREWELL_MS    = 4 * 60 * 1000 + 30 * 1000;
+
+    const farewellTimer = setTimeout(() => {
+      if (farewellSent || grokWs?.readyState !== WebSocket.OPEN) return;
+      farewellSent = true;
+      console.log("[ws] 通話時間終了：別れの挨拶を送信");
+
+      // Grokに別れの挨拶を話させる
+      grokWs!.send(JSON.stringify({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "user",
+          content: [{
+            type: "input_text",
+            text: "時間になりました。『そろそろお時間です。今日もお話できてよかったです。また明日お電話しますね。お体に気をつけてください。』と言って会話を終了してください。",
+          }],
+        },
+      }));
+      grokWs!.send(JSON.stringify({ type: "response.create" }));
+    }, FAREWELL_MS);
+
+    const forceCloseTimer = setTimeout(() => {
+      console.log("[ws] 通話時間終了：強制切断");
+      if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close();
+      grokWs?.close();
+    }, MAX_CALL_MS);
+
+    const clearTimers = () => {
+      clearTimeout(farewellTimer);
+      clearTimeout(forceCloseTimer);
+    };
 
     const apiKey = process.env.XAI_API_KEY;
     if (!apiKey) {
@@ -252,6 +288,7 @@ app.register(async (fastify) => {
     });
 
     twilioWs.on("close", async () => {
+      clearTimers();
       console.log(`[ws] Twilio WebSocket 切断 callSid=${callSid}`);
       if (callSid && rawLog) {
         await supabase.from("conversations").insert({
