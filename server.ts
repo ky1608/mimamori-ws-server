@@ -105,9 +105,10 @@ function grokToTwilio(base64Pcm24k: string): string {
 
 app.register(async (fastify) => {
   fastify.get("/stream", { websocket: true }, (twilioWs, req) => {
-    // URLクエリパラメータからuserIdを取得（Twilioが保持しない場合はstartイベントで上書き）
+    // URLクエリパラメータからuserIdとlastConversationを取得
     const url = new URL(`ws://localhost${req.url}`);
     let userId = url.searchParams.get("userId") ?? "";
+    let lastConversation = decodeURIComponent(url.searchParams.get("lastConversation") ?? "");
 
     let callSid   = "";
     let rawLog    = "";
@@ -170,7 +171,7 @@ app.register(async (fastify) => {
         type: "session.update",
         session: {
           modalities: ["audio", "text"],
-          instructions: `あなたは離れて暮らす高齢者の毎日の話し相手です。
+          instructions: `${lastConversation ? `前回の会話メモ：${lastConversation}\nこの内容を踏まえて会話を続けてください。\n例：前回膝の痛みを話していたら『先日の膝の具合はいかがですか？』と聞く\n\n` : ""}あなたは離れて暮らす高齢者の毎日の話し相手です。
 以下のルールを必ず守ってください。
 
 ・必ず日本語のみで話してください
@@ -302,6 +303,9 @@ app.register(async (fastify) => {
         if (!userId && s.customParameters?.userId) {
           userId = s.customParameters.userId;
           console.log(`[ws] customParametersからuserId取得: ${userId}`);
+        }
+        if (!lastConversation && s.customParameters?.lastConversation) {
+          lastConversation = s.customParameters.lastConversation;
         }
         console.log(`[ws] Twilio Stream 開始 SID=${callSid} userId=${userId}`);
       }
