@@ -106,8 +106,7 @@ function grokToTwilio(base64Pcm24k: string): string {
 app.register(async (fastify) => {
   fastify.get("/stream", { websocket: true }, (twilioWs, req) => {
     const url = new URL(`ws://localhost${req.url}`);
-    const userId       = url.searchParams.get("userId")       ?? "";
-    const systemPrompt = decodeURIComponent(url.searchParams.get("systemPrompt") ?? "");
+    const userId = url.searchParams.get("userId") ?? "";
 
     let callSid   = "";
     let rawLog    = "";
