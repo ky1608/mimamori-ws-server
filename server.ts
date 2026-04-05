@@ -79,7 +79,7 @@ app.register(async (fastify) => {
     console.log(`[ws] XAI_API_KEY 確認済み（先頭8文字: ${apiKey.slice(0, 8)}...）`);
 
     // モデルをURLに指定してGrok Voice APIに接続
-    grokWs = new WebSocket("wss://api.x.ai/v1/realtime?model=grok-2-voice-preview", {
+    grokWs = new WebSocket("wss://api.x.ai/v1/realtime?model=grok-4-1-fast-non-reasoning", {
       headers: {
         Authorization: `Bearer ${apiKey}`,
       },
