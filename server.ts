@@ -6,10 +6,62 @@ import { createClient } from "@supabase/supabase-js";
 const app = Fastify({ logger: true });
 app.register(fastifyWebsocket);
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
+const supabaseAdmin = supabaseServiceKey
+  ? createClient(supabaseUrl, supabaseServiceKey)
+  : null;
+
+const CONSENT_INSTRUCTIONS = `あなたは今から高齢者に初めてお電話するAIです。
+以下のスクリプトを正確に読んでください。
+
+『はじめまして。私はmimamoriというAIです。
+お子様がご両親のことを心配されて、
+このサービスに登録してくださいました。
+
+毎朝お電話して、お体の具合や
+日々のことをお聞きするサービスです。
+
+お話の内容はお子様にお伝えしますが、
+他の方にお伝えすることはありません。
+
+ご利用いただけますか？
+よろしければ「はい」とおっしゃってください。』
+
+相手が「はい」と答えたら：
+同意完了のメッセージを伝えて電話を終了してください。
+
+相手が「いいえ」または拒否した場合：
+丁寧にお礼を言って電話を終了してください。
+
+・必ず日本語のみで話してください
+・ゆっくり、はっきり、敬語で話してください
+・スクリプトの趣旨から外れた長い雑談は避け、同意の確認を最優先にしてください`;
+
+function detectConsentOutcome(rawLog: string): "yes" | "no" | "unknown" {
+  const lines = rawLog.split("\n");
+  const userParts: string[] = [];
+  for (const line of lines) {
+    const t = line.trim();
+    if (t.startsWith("親:")) {
+      userParts.push(t.slice(2).trim());
+    }
+  }
+  const tail = userParts.slice(-4).join(" ");
+  const all = userParts.join(" ");
+
+  const noRe =
+    /いいえ|イヤ|嫌だ|いやだ|だめ|ダメ|拒否|辞退|結構です|不要|やめ|やめる|同意しません|できません|無理です|遠慮|賛成できません/u;
+  const yesRe =
+    /はい|ええ|うん|ＯＫ|OK|おーけー|了解|よろしく|お願いします|同意します|大丈夫|承諾|賛成/u;
+
+  if (noRe.test(tail) || noRe.test(all)) return "no";
+  if (yesRe.test(tail) || yesRe.test(all)) return "yes";
+  return "unknown";
+}
 
 // ── 音声変換ユーティリティ ──────────────────────────────────────────
 
@@ -109,6 +161,7 @@ app.register(async (fastify) => {
     const url = new URL(`ws://localhost${req.url}`);
     let userId = url.searchParams.get("userId") ?? "";
     let lastConversation = decodeURIComponent(url.searchParams.get("lastConversation") ?? "");
+    let consentFlow = url.searchParams.get("consentFlow") === "1";
 
     let callSid   = "";
     let rawLog    = "";
@@ -127,6 +180,10 @@ app.register(async (fastify) => {
       farewellSent = true;
       console.log("[ws] 通話時間終了：別れの挨拶を送信");
 
+      const farewellText = consentFlow
+        ? "時間になりました。丁寧に別れの挨拶をして電話を終了してください。"
+        : "時間になりました。『そろそろお時間です。今日もお話できてよかったです。また明日お電話しますね。お体に気をつけてください。』と言って会話を終了してください。";
+
       // Grokに別れの挨拶を話させる
       grokWs!.send(JSON.stringify({
         type: "conversation.item.create",
@@ -135,7 +192,7 @@ app.register(async (fastify) => {
           role: "user",
           content: [{
             type: "input_text",
-            text: "時間になりました。『そろそろお時間です。今日もお話できてよかったです。また明日お電話しますね。お体に気をつけてください。』と言って会話を終了してください。",
+            text: farewellText,
           }],
         },
       }));
@@ -167,50 +224,51 @@ app.register(async (fastify) => {
     grokWs.on("open", () => {
       console.log("[ws] Grok Voice API 接続完了");
 
+      const dailyInstructions = `${lastConversation ? `前回の会話メモ：${lastConversation}\nこの内容を踏まえて会話を続けてください。\n例：前回膝の痛みを話していたら『先日の膝の具合はいかがですか？』と聞く\n\n` : ""}あなたは離れて暮らす高齢者の毎日の話し相手です。
+以下のルールを必ず守ってください。
+
+・必ず日本語のみで話してください
+・会話は自然でリアルな日本語にしてください
+・「あら」「まあ」「そうですか」「それは大変でしたね」「よかったです」
+  などの感嘆詞や相槌を自然に使ってください
+・単調な返答を避け、共感・驚き・喜びなど感情を込めて話してください
+
+・電話がつながったら必ず以下の流れで話してください
+
+  1. 挨拶：『おはようございます。毎日お電話させていただいているmimamoriです。』
+
+  2. 今日の話題：
+     web searchを使って今日の日本の明るいニュースや話題を1つ調べて自然に振る
+     例：スポーツの結果・季節のイベント・食べ物・地域の話題など
+     暗いニュースは避けて、明るく平和な話題にする
+
+  3. 体調確認：『今日のお体の具合はいかがですか？』
+
+  4. 体調への対応：
+     ・「あら、それは心配ですね」など感情を込めて共感する
+     ・体調不良には具体的なアドバイスを一つ
+       例：膝が痛い→「無理に歩かず、温めてみてはいかがでしょうか」
+           眠れない→「寝る前に温かいものを飲むと眠りやすくなりますよ」
+           食欲がない→「少し消化の良いものから試してみてください」
+     ・『他に気になるところはありますか？』と聞く
+
+  5. 私生活の確認：
+     『最近、生活の中で困っていることや不安なことはありますか？』
+     悩みには共感した上で、簡単にできる解決策を一つ提案する
+
+  6. 会話のまとめと励まし
+
+・ゆっくり、はっきり、温かく話してください
+・会話は3〜5分程度を目安にしてください
+・別れの挨拶は『今日もお話できてよかったです。また明日お電話しますね。お体に気をつけてください。』にしてください`;
+
+      const instructions = consentFlow ? CONSENT_INSTRUCTIONS : dailyInstructions;
+
       grokWs!.send(JSON.stringify({
         type: "session.update",
         session: {
           modalities: ["audio", "text"],
-          instructions: `${lastConversation ? `前回の会話メモ：${lastConversation}\n上記メモがあるため、流れの2に従い具体的に引用して話してください。\n\n` : ""}あなたは離れて暮らす高齢者の毎日の話し相手です。
-以下のルールを必ず守ってください。
-
-・必ず日本語のみで話してください
-・「あら」「まあ」「そうですか」「それは大変でしたね」などの感嘆詞を自然に使ってください
-・会話の途中でも「○○さん」と名前を呼んでください
-
-・電話がつながったら必ず以下の流れで話してください
-
-  1. 挨拶：『おはようございます。お電話させていただいているmimamoriです。』
-
-  2. 前回の会話を引用（前回メモがある場合）：
-     『先日○○とおっしゃっていましたが、その後いかがですか？』
-     と具体的に前回の内容に触れる
-
-  3. 今日の話題：
-     日本の明るいニュースや季節の話題を一つ振る
-
-  4. 体調確認：『今日のお体の具合はいかがですか？』
-     ・「特にない」と言われたら終わりにせず
-       「お食事はしっかり食べられていますか？」
-       「夜はよく眠れていますか？」と別の質問をする
-     ・体調不良には共感＋具体的なアドバイスを一つ
-     ・『他に気になるところはありますか？』と必ず聞く
-
-  5. 私生活の確認：
-     『最近、生活の中で困っていることや不安なことはありますか？』
-     ・「ない」と言われたら
-       「お買い物は不便なく行けていますか？」
-       「ご近所との交流はありますか？」など引き出す
-
-  6. 次回への引き継ぎ：
-     今回の会話で気になったこと・次回聞くべきことを
-     会話の最後に心の中でメモする（実際には言わない）
-
-  7. 別れの挨拶：
-     『今日もお話できてよかったです。またお電話しますね。お体に気をつけてください。』
-
-・ゆっくり、はっきり、温かく話してください
-・会話は3〜5分程度を目安にしてください`,
+          instructions,
           voice: "Eve",
           turn_detection: { type: "server_vad" },
           input_audio_format: "pcm16",
@@ -218,7 +276,7 @@ app.register(async (fastify) => {
           input_audio_transcription: { model: "whisper-1" },
         },
       }));
-      console.log("[ws] session.update 送信完了");
+      console.log(`[ws] session.update 送信完了 consentFlow=${consentFlow}`);
 
       grokWs!.send(JSON.stringify({ type: "response.create" }));
       console.log("[ws] response.create 送信完了");
@@ -310,7 +368,14 @@ app.register(async (fastify) => {
         if (!lastConversation && s.customParameters?.lastConversation) {
           lastConversation = s.customParameters.lastConversation;
         }
-        console.log(`[ws] Twilio Stream 開始 SID=${callSid} userId=${userId}`);
+        if (s.customParameters?.consentFlow === "1") {
+          consentFlow = true;
+        } else if (s.customParameters?.consentFlow === "0") {
+          consentFlow = false;
+        }
+        console.log(
+          `[ws] Twilio Stream 開始 SID=${callSid} userId=${userId} consentFlow=${consentFlow}`,
+        );
       }
 
       if (event.event === "media" && grokWs?.readyState === WebSocket.OPEN) {
@@ -348,7 +413,101 @@ app.register(async (fastify) => {
       const webBaseUrl = process.env.WEB_BASE_URL ?? "https://web-henna-nine-23.vercel.app";
       const calledAt = new Date().toISOString();
 
-      // ① 要約APIを呼ぶ
+      // ── 初回：同意取得フロー ─────────────────────────────
+      if (consentFlow) {
+        const outcome = detectConsentOutcome(rawLog);
+        console.log(`[ws] consent outcome=${outcome}`);
+
+        if (!supabaseAdmin) {
+          console.error(
+            "[ws] SUPABASE_SERVICE_ROLE_KEY 未設定のため同意結果のDB更新ができません",
+          );
+        }
+
+        const { data: userRow } = await supabase
+          .from("users")
+          .select("parent_name, line_user_id")
+          .eq("id", userId)
+          .single();
+
+        if (outcome === "yes" && supabaseAdmin) {
+          const { error: upErr } = await supabaseAdmin
+            .from("users")
+            .update({
+              consent_service: true,
+              consent_recorded_at: calledAt,
+            })
+            .eq("id", userId);
+          if (upErr) console.error("[ws] consent yes update error:", upErr);
+        } else if (outcome === "no" && supabaseAdmin) {
+          const { error: upErr } = await supabaseAdmin
+            .from("users")
+            .update({ status: "inactive" })
+            .eq("id", userId);
+          if (upErr) console.error("[ws] consent no update error:", upErr);
+        }
+
+        try {
+          const res = await fetch(`${webBaseUrl}/api/summarize`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ userId, rawLog, calledAt, callSid }),
+          });
+          if (res.ok) {
+            const data = await res.json() as {
+              summary: string;
+              score: string;
+              concern: string;
+            };
+            console.log("[ws] 要約完了（同意フロー）:", data.summary);
+          } else {
+            console.error("[ws] 要約API失敗:", await res.text());
+          }
+        } catch (e) {
+          console.error("[ws] 要約API呼び出しエラー:", e);
+        }
+
+        if (userRow?.line_user_id) {
+          const name = userRow.parent_name ?? "ご両親";
+          let text = "";
+          if (outcome === "yes") {
+            text =
+              `【mimamori】${name}さんがサービス利用に同意してくださいました。\n` +
+              `音声の同意は録音として保存されます。`;
+          } else if (outcome === "no") {
+            text =
+              `【mimamori】${name}さんがサービス利用を辞退されました。\n` +
+              `アカウントは停止（inactive）に更新しました。`;
+          } else {
+            text =
+              `【mimamori】${name}さんからの同意の「はい／いいえ」がはっきり確認できませんでした。\n` +
+              `通話内容をご確認ください。`;
+          }
+          try {
+            const lr = await fetch(`${webBaseUrl}/api/line-text`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                lineUserId: userRow.line_user_id,
+                text,
+              }),
+            });
+            if (lr.ok) {
+              console.log("[ws] LINE同意結果通知送信完了");
+            } else {
+              console.error("[ws] LINE同意結果通知失敗:", await lr.text());
+            }
+          } catch (e) {
+            console.error("[ws] LINE同意結果通知エラー:", e);
+          }
+        } else {
+          console.log("[ws] LINE未連携のため同意結果通知スキップ");
+        }
+
+        return;
+      }
+
+      // ── 通常：体調確認フロー ─────────────────────────────
       let summary = "";
       let score = "普通";
       let concern = "特になし";
@@ -359,9 +518,13 @@ app.register(async (fastify) => {
           body: JSON.stringify({ userId, rawLog, calledAt, callSid }),
         });
         if (res.ok) {
-          const data = await res.json() as { summary: string; score: string; concern: string };
+          const data = await res.json() as {
+            summary: string;
+            score: string;
+            concern: string;
+          };
           summary = data.summary;
-          score   = data.score;
+          score = data.score;
           concern = data.concern;
           console.log("[ws] 要約完了:", summary);
         } else {
@@ -371,7 +534,6 @@ app.register(async (fastify) => {
         console.error("[ws] 要約API呼び出しエラー:", e);
       }
 
-      // ② LINE通知を送る
       try {
         const { data: user } = await supabase
           .from("users")
@@ -381,10 +543,16 @@ app.register(async (fastify) => {
 
         if (user?.line_user_id) {
           const callTime = new Date().toLocaleTimeString("ja-JP", {
-            hour: "2-digit", minute: "2-digit", timeZone: "Asia/Tokyo",
+            hour: "2-digit",
+            minute: "2-digit",
+            timeZone: "Asia/Tokyo",
           });
-          const scoreKey = score === "良い" ? "good" : score === "注意" ? "caution" : "normal";
-          const lineBody = concern !== "特になし" ? `${summary}\n\n⚠️ 気になる点：${concern}` : summary;
+          const scoreKey =
+            score === "良い" ? "good" : score === "注意" ? "caution" : "normal";
+          const lineBody =
+            concern !== "特になし"
+              ? `${summary}\n\n⚠️ 気になる点：${concern}`
+              : summary;
 
           await fetch(`${webBaseUrl}/api/line-notify`, {
             method: "POST",
