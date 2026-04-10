@@ -11,6 +11,31 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
+const CONSENT_SYSTEM_PROMPT = `あなたは今から高齢者に初めてお電話するAIです。
+必ず日本語で話してください。
+以下のスクリプトを正確に読んでください。
+
+『はじめまして。私はmimamoriというAIです。
+お子様がご両親のことを心配されて、
+このサービスに登録してくださいました。
+
+毎朝お電話して、お体の具合や
+日々のことをお聞きするサービスです。
+
+お話の内容はお子様にお伝えしますが、
+他の方にお伝えすることはありません。
+
+ご利用いただけますか？
+よろしければ「はい」とおっしゃってください。』
+
+相手が「はい」と答えたら：
+「ありがとうございます。明日からもよろしくお願いします。」
+と言って会話を終了してください。
+
+相手が「いいえ」と答えたら：
+「承知しました。またご検討ください。」
+と言って会話を終了してください。`;
+
 // ── 音声変換ユーティリティ ──────────────────────────────────────────
 
 // μLaw → PCM16
@@ -109,6 +134,7 @@ app.register(async (fastify) => {
     const url = new URL(`ws://localhost${req.url}`);
     let userId = url.searchParams.get("userId") ?? "";
     let lastConversation = decodeURIComponent(url.searchParams.get("lastConversation") ?? "");
+    let consentFlow = url.searchParams.get("consentFlow") === "1";
 
     let callSid   = "";
     let rawLog    = "";
@@ -167,11 +193,7 @@ app.register(async (fastify) => {
     grokWs.on("open", () => {
       console.log("[ws] Grok Voice API 接続完了");
 
-      grokWs!.send(JSON.stringify({
-        type: "session.update",
-        session: {
-          modalities: ["audio", "text"],
-          instructions: `${lastConversation ? `前回の会話メモ：${lastConversation}\n上記メモがあるため、流れの2に従い具体的に引用して話してください。\n\n` : ""}あなたは離れて暮らす高齢者の毎日の話し相手です。
+      const regularSystemPrompt = `${lastConversation ? `前回の会話メモ：${lastConversation}\n上記メモがあるため、流れの2に従い具体的に引用して話してください。\n\n` : ""}あなたは離れて暮らす高齢者の毎日の話し相手です。
 以下のルールを必ず守ってください。
 
 ・必ず日本語のみで話してください
@@ -210,7 +232,13 @@ app.register(async (fastify) => {
      『今日もお話できてよかったです。またお電話しますね。お体に気をつけてください。』
 
 ・ゆっくり、はっきり、温かく話してください
-・会話は3〜5分程度を目安にしてください`,
+・会話は3〜5分程度を目安にしてください`;
+
+      grokWs!.send(JSON.stringify({
+        type: "session.update",
+        session: {
+          modalities: ["audio", "text"],
+          instructions: consentFlow ? CONSENT_SYSTEM_PROMPT : regularSystemPrompt,
           voice: "Eve",
           turn_detection: { type: "server_vad" },
           input_audio_format: "pcm16",
@@ -310,7 +338,10 @@ app.register(async (fastify) => {
         if (!lastConversation && s.customParameters?.lastConversation) {
           lastConversation = s.customParameters.lastConversation;
         }
-        console.log(`[ws] Twilio Stream 開始 SID=${callSid} userId=${userId}`);
+        if (s.customParameters?.consentFlow === "1") {
+          consentFlow = true;
+        }
+        console.log(`[ws] Twilio Stream 開始 SID=${callSid} userId=${userId} consentFlow=${consentFlow}`);
       }
 
       if (event.event === "media" && grokWs?.readyState === WebSocket.OPEN) {
