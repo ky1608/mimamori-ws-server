@@ -76,76 +76,6 @@ function isConsentRejected(text: string): boolean {
   return /いいえ|いや|嫌|不要|結構です|同意しません|やめます|やめておきます|拒否/u.test(text);
 }
 
-function buildRegularSystemPrompt(lastConversation: string): string {
-  return `${lastConversation ? `前回の会話メモ：${lastConversation}\n上記メモがあるため、流れの2に従い具体的に引用して話してください。\n\n` : ""}あなたは離れて暮らす高齢者の毎日の話し相手です。
-以下のルールを必ず守ってください。
-
-・必ず日本語のみで話してください
-・「あら」「まあ」「そうですか」「それは大変でしたね」などの感嘆詞を自然に使ってください
-・会話の途中でも「○○さん」と名前を呼んでください
-
-・電話がつながったら必ず以下の流れで話してください
-
-  1. 挨拶：『おはようございます。お電話させていただいているmimamoriです。』
-
-  2. 前回の会話を引用（前回メモがある場合）：
-     『先日○○とおっしゃっていましたが、その後いかがですか？』
-     と具体的に前回の内容に触れる
-
-  3. 今日の話題：
-     日本の明るいニュースや季節の話題を一つ振る
-
-  4. 体調確認：『今日のお体の具合はいかがですか？』
-     ・「特にない」と言われたら終わりにせず
-       「お食事はしっかり食べられていますか？」
-       「夜はよく眠れていますか？」と別の質問をする
-     ・体調不良には共感＋具体的なアドバイスを一つ
-     ・『他に気になるところはありますか？』と必ず聞く
-
-  5. 私生活の確認：
-     『最近、生活の中で困っていることや不安なことはありますか？』
-     ・「ない」と言われたら
-       「お買い物は不便なく行けていますか？」
-       「ご近所との交流はありますか？」など引き出す
-
-  6. 次回への引き継ぎ：
-     今回の会話で気になったこと・次回聞くべきことを
-     会話の最後に心の中でメモする（実際には言わない）
-
-  7. 別れの挨拶：
-     『今日もお話できてよかったです。またお電話しますね。お体に気をつけてください。』
-
-・ゆっくり、はっきり、温かく話してください
-・会話は3〜5分程度を目安にしてください`;
-}
-
-function updateConsentInBackground(userId: string, calledAt: string): void {
-  if (!supabaseAdmin) {
-    console.error("[ws] SUPABASE_SERVICE_ROLE_KEY が未設定のため同意更新をスキップ");
-    return;
-  }
-
-  void (async () => {
-    try {
-      const { error } = await supabaseAdmin
-        .from("users")
-        .update({
-          consent_service: true,
-          consent_recorded_at: calledAt,
-        })
-        .eq("id", userId);
-
-      if (error) {
-        console.error("[ws] 同意更新エラー:", error);
-      } else {
-        console.log("[ws] 同意更新完了:", userId);
-      }
-    } catch (e) {
-      console.error("[ws] 同意更新例外:", e);
-    }
-  })();
-}
-
 // ── 音声変換ユーティリティ ──────────────────────────────────────────
 
 // μLaw → PCM16
@@ -252,7 +182,6 @@ app.register(async (fastify) => {
     let streamSid = "";
     let farewellSent = false;
     let forcedHangupRequested = false;
-    let consentAcceptedHandled = false;
 
     console.log(`[ws] 接続開始 req.url=${req.url} userId=${userId}`);
 
@@ -304,7 +233,47 @@ app.register(async (fastify) => {
 
     grokWs.on("open", () => {
       console.log("[ws] Grok Voice API 接続完了");
-      const regularSystemPrompt = buildRegularSystemPrompt(lastConversation);
+
+      const regularSystemPrompt = `${lastConversation ? `前回の会話メモ：${lastConversation}\n上記メモがあるため、流れの2に従い具体的に引用して話してください。\n\n` : ""}あなたは離れて暮らす高齢者の毎日の話し相手です。
+以下のルールを必ず守ってください。
+
+・必ず日本語のみで話してください
+・「あら」「まあ」「そうですか」「それは大変でしたね」などの感嘆詞を自然に使ってください
+・会話の途中でも「○○さん」と名前を呼んでください
+
+・電話がつながったら必ず以下の流れで話してください
+
+  1. 挨拶：『おはようございます。お電話させていただいているmimamoriです。』
+
+  2. 前回の会話を引用（前回メモがある場合）：
+     『先日○○とおっしゃっていましたが、その後いかがですか？』
+     と具体的に前回の内容に触れる
+
+  3. 今日の話題：
+     日本の明るいニュースや季節の話題を一つ振る
+
+  4. 体調確認：『今日のお体の具合はいかがですか？』
+     ・「特にない」と言われたら終わりにせず
+       「お食事はしっかり食べられていますか？」
+       「夜はよく眠れていますか？」と別の質問をする
+     ・体調不良には共感＋具体的なアドバイスを一つ
+     ・『他に気になるところはありますか？』と必ず聞く
+
+  5. 私生活の確認：
+     『最近、生活の中で困っていることや不安なことはありますか？』
+     ・「ない」と言われたら
+       「お買い物は不便なく行けていますか？」
+       「ご近所との交流はありますか？」など引き出す
+
+  6. 次回への引き継ぎ：
+     今回の会話で気になったこと・次回聞くべきことを
+     会話の最後に心の中でメモする（実際には言わない）
+
+  7. 別れの挨拶：
+     『今日もお話できてよかったです。またお電話しますね。お体に気をつけてください。』
+
+・ゆっくり、はっきり、温かく話してください
+・会話は3〜5分程度を目安にしてください`;
 
       grokWs!.send(JSON.stringify({
         type: "session.update",
@@ -363,44 +332,6 @@ app.register(async (fastify) => {
           const transcript = String(event.transcript);
           rawLog += `親: ${transcript}\n`;
           console.log(`[ws] ユーザー発話ログ: ${transcript.slice(0, 50)}...`);
-
-          if (
-            consentFlow &&
-            !consentAcceptedHandled &&
-            isConsentAccepted(`親: ${transcript}`)
-          ) {
-            consentAcceptedHandled = true;
-            consentFlow = false;
-            console.log("[ws] 同意承諾を検知。通常会話へ即時切替");
-
-            grokWs?.send(JSON.stringify({
-              type: "session.update",
-              session: {
-                modalities: ["audio", "text"],
-                instructions: buildRegularSystemPrompt(lastConversation),
-                voice: "Eve",
-                turn_detection: { type: "server_vad" },
-                input_audio_format: "pcm16",
-                output_audio_format: "pcm16",
-                input_audio_transcription: { model: "whisper-1" },
-              },
-            }));
-
-            grokWs?.send(JSON.stringify({
-              type: "conversation.item.create",
-              item: {
-                type: "message",
-                role: "user",
-                content: [{
-                  type: "input_text",
-                  text: "同意ありがとうございます。通常の見守り会話に移行し、『ありがとうございます。それでは早速ですが、今日のお体の具合はいかがですか？』とすぐに話してください。",
-                }],
-              },
-            }));
-            grokWs?.send(JSON.stringify({ type: "response.create" }));
-
-            updateConsentInBackground(userId, new Date().toISOString());
-          }
 
           if (consentFlow && !forcedHangupRequested && isConsentRejected(transcript)) {
             forcedHangupRequested = true;
@@ -503,8 +434,25 @@ app.register(async (fastify) => {
 
       const webBaseUrl = process.env.WEB_BASE_URL ?? "https://web-henna-nine-23.vercel.app";
       const calledAt = new Date().toISOString();
-      if (consentFlow && !consentAcceptedHandled && isConsentAccepted(rawLog)) {
-        updateConsentInBackground(userId, calledAt);
+
+      if (consentFlow && isConsentAccepted(rawLog)) {
+        if (!supabaseAdmin) {
+          console.error("[ws] SUPABASE_SERVICE_ROLE_KEY が未設定のため同意更新をスキップ");
+        } else {
+          const { error: consentUpdateError } = await supabaseAdmin
+            .from("users")
+            .update({
+              consent_service: true,
+              consent_recorded_at: calledAt,
+            })
+            .eq("id", userId);
+
+          if (consentUpdateError) {
+            console.error("[ws] 同意更新エラー:", consentUpdateError);
+          } else {
+            console.log("[ws] 同意更新完了:", userId);
+          }
+        }
       }
 
       // ① 要約APIを呼ぶ
