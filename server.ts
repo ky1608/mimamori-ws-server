@@ -290,11 +290,10 @@ app.register(async (fastify) => {
   
   5. 私生活の確認：
      最近、生活の中で困っていることや不安なことはありますか？
-     ・ないと言われたら
-       お買い物は不便なく行けていますか？
-       ご近所との交流はありますか？
-       最近楽しかったことはありますか？
-       など引き出す質問を続ける
+     ・相手の回答をしっかり聞いて共感する
+     ・回答後に「他に何かお困りのことはありますか？」と必ず聞く
+     ・「ない」と言われたら締めの挨拶に入る
+     ・ないと言われる前に締めの挨拶に入らないこと
   
   6. 締めの挨拶と強制終了：
      体調確認と私生活確認が終わったら必ず以下の挨拶をして電話を終了してください。
@@ -355,8 +354,17 @@ app.register(async (fastify) => {
           rawLog += `AI: ${aiTranscript}\n`;
           console.log(`[ws] AI発話ログ: ${aiTranscript.slice(0, 50)}...`);
 
-          const closingPhrase = "今日もお話できてよかったです。またお電話しますね。お体に気をつけてください。";
-          if (!consentFlow && !forcedHangupRequested && aiTranscript.includes(closingPhrase)) {
+          const closingPatterns = [
+            "今日もお話できてよかったです",
+            "またお電話します",
+            "お体に気をつけてください",
+          ];
+          const shouldHangupByClosing =
+            !consentFlow &&
+            !forcedHangupRequested &&
+            closingPatterns.some((p) => aiTranscript.includes(p));
+
+          if (shouldHangupByClosing) {
             forcedHangupRequested = true;
             console.log(`[ws] 締め挨拶を検知。Twilio強制切断を実行 callSid=${callSid}`);
             if (twilioClient && callSid) {
