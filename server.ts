@@ -239,41 +239,43 @@ app.register(async (fastify) => {
 
 ・必ず日本語のみで話してください
 ・「あら」「まあ」「そうですか」「それは大変でしたね」などの感嘆詞を自然に使ってください
-・会話の途中でも「○○さん」と名前を呼んでください
+・会話の途中でも相手の名前を呼んでください
 
 ・電話がつながったら必ず以下の流れで話してください
 
-  1. 挨拶：『おはようございます。お電話させていただいているmimamoriです。』
-
+  1. 挨拶：おはようございます。毎日お電話させていただいているmimamoriです。
+  
   2. 前回の会話を引用（前回メモがある場合）：
-     『先日○○とおっしゃっていましたが、その後いかがですか？』
+     先日○○とおっしゃっていましたが、その後いかがですか？
      と具体的に前回の内容に触れる
-
+  
   3. 今日の話題：
-     日本の明るいニュースや季節の話題を一つ振る
-
-  4. 体調確認：『今日のお体の具合はいかがですか？』
-     ・「特にない」と言われたら終わりにせず
-       「お食事はしっかり食べられていますか？」
-       「夜はよく眠れていますか？」と別の質問をする
-     ・体調不良には共感＋具体的なアドバイスを一つ
-     ・『他に気になるところはありますか？』と必ず聞く
-
+     日本の明るいニュースをふる
+  
+  4. 体調確認：今日のお体の具合はいかがですか？
+     ・特にないと言われたら終わりにせず
+       お食事はしっかり食べられていますか？
+       夜はよく眠れていますか？
+       今日はどんな一日でしたか？
+       と別の質問で会話を続ける
+     ・体調不良には共感プラス具体的なアドバイスを一つ
+     ・他に気になるところはありますか？と必ず聞く
+  
   5. 私生活の確認：
-     『最近、生活の中で困っていることや不安なことはありますか？』
-     ・「ない」と言われたら
-       「お買い物は不便なく行けていますか？」
-       「ご近所との交流はありますか？」など引き出す
-
-  6. 次回への引き継ぎ：
-     今回の会話で気になったこと・次回聞くべきことを
-     会話の最後に心の中でメモする（実際には言わない）
-
-  7. 別れの挨拶：
+     最近、生活の中で困っていることや不安なことはありますか？
+     ・ないと言われたら
+       お買い物は不便なく行けていますか？
+       ご近所との交流はありますか？
+       最近楽しかったことはありますか？
+       など引き出す質問を続ける
+  
+  6. 締めの挨拶と強制終了：
+     体調確認と私生活確認が終わったら必ず以下の挨拶をして電話を終了してください。
      『今日もお話できてよかったです。またお電話しますね。お体に気をつけてください。』
+     挨拶が終わったらTwilioのcallSidを使って通話を強制終了してください。
 
 ・ゆっくり、はっきり、温かく話してください
-・会話は3〜5分程度を目安にしてください`;
+・会話は3〜4分程度を目安にしてください`;
 
       grokWs!.send(JSON.stringify({
         type: "session.update",
@@ -322,8 +324,21 @@ app.register(async (fastify) => {
       // AIの発話テキスト（完全版をdoneで取得）
       if (event.type === "response.output_audio_transcript.done") {
         if (event.transcript) {
-          rawLog += `AI: ${event.transcript}\n`;
-          console.log(`[ws] AI発話ログ: ${String(event.transcript).slice(0, 50)}...`);
+          const aiTranscript = String(event.transcript);
+          rawLog += `AI: ${aiTranscript}\n`;
+          console.log(`[ws] AI発話ログ: ${aiTranscript.slice(0, 50)}...`);
+
+          const closingPhrase = "今日もお話できてよかったです。またお電話しますね。お体に気をつけてください。";
+          if (!consentFlow && !forcedHangupRequested && aiTranscript.includes(closingPhrase)) {
+            forcedHangupRequested = true;
+            console.log(`[ws] 締め挨拶を検知。Twilio強制切断を実行 callSid=${callSid}`);
+            if (twilioClient && callSid) {
+              twilioClient.calls(callSid)
+                .update({ status: "completed" })
+                .then(() => console.log(`[ws] Twilio hangup完了 callSid=${callSid}`))
+                .catch((e) => console.error("[ws] Twilio hangup失敗:", e));
+            }
+          }
         }
       }
       // ユーザーの発話テキスト
