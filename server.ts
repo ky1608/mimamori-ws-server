@@ -76,6 +76,28 @@ function isConsentRejected(text: string): boolean {
   return /いいえ|いや|嫌|不要|結構です|同意しません|やめます|やめておきます|拒否/u.test(text);
 }
 
+async function fetchParentFirstName(userId: string): Promise<string> {
+  if (!userId) return "";
+
+  try {
+    const { data, error } = await supabase
+      .from("users")
+      .select("parent_first_name")
+      .eq("id", userId)
+      .single();
+
+    if (error) {
+      console.error("[ws] parent_first_name取得エラー:", error);
+      return "";
+    }
+
+    return (data?.parent_first_name ?? "").trim();
+  } catch (e) {
+    console.error("[ws] parent_first_name取得例外:", e);
+    return "";
+  }
+}
+
 // ── 音声変換ユーティリティ ──────────────────────────────────────────
 
 // μLaw → PCM16
@@ -182,6 +204,7 @@ app.register(async (fastify) => {
     let streamSid = "";
     let farewellSent = false;
     let forcedHangupRequested = false;
+    let parentFirstName = "";
 
     console.log(`[ws] 接続開始 req.url=${req.url} userId=${userId}`);
 
@@ -231,15 +254,19 @@ app.register(async (fastify) => {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
 
-    grokWs.on("open", () => {
+    grokWs.on("open", async () => {
       console.log("[ws] Grok Voice API 接続完了");
+      if (userId) {
+        parentFirstName = await fetchParentFirstName(userId);
+      }
+      const displayName = parentFirstName || "相手";
 
       const regularSystemPrompt = `${lastConversation ? `前回の会話メモ：${lastConversation}\n上記メモがあるため、流れの2に従い具体的に引用して話してください。\n\n` : ""}あなたは離れて暮らす高齢者の毎日の話し相手です。
 以下のルールを必ず守ってください。
 
 ・必ず日本語のみで話してください
 ・「あら」「まあ」「そうですか」「それは大変でしたね」などの感嘆詞を自然に使ってください
-・会話の途中でも相手の名前を呼んでください
+・会話の途中でも「${displayName}さん」と名前を呼んでください
 
 ・電話がつながったら必ず以下の流れで話してください
 
@@ -408,6 +435,11 @@ app.register(async (fastify) => {
         }
         if (!lastConversation && s.customParameters?.lastConversation) {
           lastConversation = s.customParameters.lastConversation;
+        }
+        if (!parentFirstName && userId) {
+          void fetchParentFirstName(userId).then((name) => {
+            parentFirstName = name;
+          });
         }
         if (s.customParameters?.consentFlow === "1") {
           consentFlow = true;
