@@ -24,6 +24,14 @@ const twilioClient =
     ? twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN)
     : null;
 
+if (twilioClient) {
+  console.log("[ws] Twilio client 初期化済み");
+} else {
+  console.warn(
+    `[ws] Twilio client 未初期化: TWILIO_ACCOUNT_SID=${process.env.TWILIO_ACCOUNT_SID ? "set" : "missing"}, TWILIO_AUTH_TOKEN=${process.env.TWILIO_AUTH_TOKEN ? "set" : "missing"}`,
+  );
+}
+
 const CONSENT_SYSTEM_PROMPT = `あなたは今から高齢者に初めてお電話するAIです。
 必ず日本語で話してください。
 以下のスクリプトを正確に読んでください。
@@ -74,6 +82,46 @@ function isConsentAccepted(rawLog: string): boolean {
 
 function isConsentRejected(text: string): boolean {
   return /いいえ|いや|嫌|不要|結構です|同意しません|やめます|やめておきます|拒否/u.test(text);
+}
+
+async function forceHangupByTwilio(callSid: string, reason: string): Promise<void> {
+  if (!twilioClient) {
+    console.warn(`[ws] Twilio client が未初期化のためhangupスキップ reason=${reason}`);
+    return;
+  }
+  if (!callSid) {
+    console.warn(`[ws] callSid が空のためhangupスキップ reason=${reason}`);
+    return;
+  }
+
+  try {
+    const updated = await twilioClient.calls(callSid).update({ status: "completed" });
+    console.log(
+      `[ws] Twilio hangup完了 reason=${reason} callSid=${callSid} twilioStatus=${updated.status}`,
+    );
+  } catch (e: unknown) {
+    const err = e as {
+      code?: number;
+      status?: number;
+      message?: string;
+      moreInfo?: string;
+      stack?: string;
+    };
+    console.error(
+      "[ws] Twilio hangup失敗:",
+      JSON.stringify({
+        reason,
+        callSid,
+        code: err?.code,
+        status: err?.status,
+        message: err?.message,
+        moreInfo: err?.moreInfo,
+      }),
+    );
+    if (err?.stack) {
+      console.error("[ws] Twilio hangup stack:", err.stack);
+    }
+  }
 }
 
 async function fetchParentFirstName(userId: string): Promise<string> {
@@ -367,12 +415,7 @@ app.register(async (fastify) => {
           if (shouldHangupByClosing) {
             forcedHangupRequested = true;
             console.log(`[ws] 締め挨拶を検知。Twilio強制切断を実行 callSid=${callSid}`);
-            if (twilioClient && callSid) {
-              twilioClient.calls(callSid)
-                .update({ status: "completed" })
-                .then(() => console.log(`[ws] Twilio hangup完了 callSid=${callSid}`))
-                .catch((e) => console.error("[ws] Twilio hangup失敗:", e));
-            }
+            void forceHangupByTwilio(callSid, "closing-greeting");
           }
         }
       }
@@ -386,15 +429,7 @@ app.register(async (fastify) => {
           if (consentFlow && !forcedHangupRequested && isConsentRejected(transcript)) {
             forcedHangupRequested = true;
             console.log(`[ws] 同意拒否を検知。Twilio強制切断を実行 callSid=${callSid}`);
-
-            if (twilioClient && callSid) {
-              twilioClient.calls(callSid)
-                .update({ status: "completed" })
-                .then(() => console.log(`[ws] Twilio hangup完了 callSid=${callSid}`))
-                .catch((e) => console.error("[ws] Twilio hangup失敗:", e));
-            } else {
-              console.warn("[ws] Twilio client または callSid が無く hangup スキップ");
-            }
+            void forceHangupByTwilio(callSid, "consent-rejected");
           }
         }
       }
