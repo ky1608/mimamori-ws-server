@@ -369,6 +369,11 @@ app.register(async (fastify) => {
         session: {
           modalities: ["audio", "text"],
           instructions: consentFlow ? CONSENT_SYSTEM_PROMPT : regularSystemPrompt,
+          tools: [
+            {
+              type: "web_search",
+            },
+          ],
           voice: "Eve",
           turn_detection: { type: "server_vad" },
           input_audio_format: "pcm16",
